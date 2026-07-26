@@ -32,4 +32,4 @@ build_exe.bat
 Готовый файл: `dist\ZapretManager.exe`
 
 ## Важно
-Это обёртка над zapret, не замена самого обхода DPI.
+Это обёртка над [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube), не замена самого zapret.
