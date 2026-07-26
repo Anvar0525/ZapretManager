@@ -14,6 +14,12 @@ from core import (
     winws_running,
 )
 from updater import check_for_update, download_and_install, fetch_release, local_has_version
+from app_updater import (
+    download_app_exe,
+    fetch_latest_app_release,
+    is_app_update_available,
+    schedule_replace_and_restart,
+)
 
 Listener = Callable[[], None]
 
@@ -198,11 +204,15 @@ class AppController:
                 strategy = strategies[0] if strategies else strategy
             self.config["strategy"] = strategy
             save_config(self.config)
-            msg = (
-                f"Скачан zapret {release.version}\n"
-                f"Папка: {new_path}\n"
-                f"Теперь нажмите «Запустить»."
-            )
+            if was_running:
+                start_strategy(new_path, strategy)
+                msg = f"Zapret обновлён до {release.version} (перезапущен)"
+            else:
+                msg = (
+                    f"Скачан zapret {release.version}\n"
+                    f"Папка: {new_path}\n"
+                    f"Теперь нажмите «Запустить»."
+                )
         except Exception as exc:
             msg = f"Ошибка загрузки: {exc}"
         finally:
@@ -213,6 +223,92 @@ class AppController:
     def install_update(self) -> str:
         # Same pipeline as download_latest (works for first install too)
         return self.download_latest()
+
+    def auto_update_zapret_silent(self) -> str:
+        """
+        Background zapret update: download+install without asking.
+        Restarts bypass if it was running (brief blink is OK).
+        """
+        if not self.config.get("auto_update_zapret", True):
+            return ""
+        if self._updating:
+            return ""
+
+        version = self.selected_version()
+        local = version.version if version else ""
+        if not local:
+            # First install: also silent — download latest without asking
+            try:
+                release = fetch_release()
+                self.config["available_update"] = release.version
+                save_config(self.config)
+                result = self.download_latest()
+                if result.startswith("Ошибка"):
+                    return result
+                return f"Zapret скачан: {release.version}"
+            except Exception as exc:
+                return f"Не удалось скачать zapret: {exc}"
+
+        available, release, message = check_for_update(local)
+        if not available or not release:
+            self.config["available_update"] = ""
+            save_config(self.config)
+            self.notify()
+            return ""
+
+        self.config["available_update"] = release.version
+        save_config(self.config)
+        self.notify()
+        result = self.download_latest()
+        if result.startswith("Ошибка"):
+            return result
+        return f"Zapret обновлён до {release.version}"
+
+    def check_app_update(self) -> tuple[bool, str, str]:
+        """
+        Returns (available, remote_version, message).
+        Honors skip_app_version for 'No' on this release.
+        """
+        try:
+            release = fetch_latest_app_release()
+        except Exception as exc:
+            return False, "", f"Не удалось проверить обновление приложения: {exc}"
+        if not release:
+            return False, "", ""
+        skipped = self.config.get("skip_app_version") or ""
+        if skipped == release.version:
+            return False, release.version, ""
+        if not is_app_update_available(release.version, APP_VERSION):
+            return False, release.version, ""
+        return (
+            True,
+            release.version,
+            f"Доступна новая версия приложения: {release.version}\n"
+            f"(сейчас {APP_VERSION})\n\nСкачать и установить?",
+        )
+
+    def skip_app_update(self, version: str) -> None:
+        self.config["skip_app_version"] = version
+        save_config(self.config)
+
+    def apply_app_update(self, version: str | None = None) -> str:
+        """Download new exe and schedule replace+restart. Raises/returns error text."""
+        release = fetch_latest_app_release()
+        if not release:
+            return "Не найден exe в релизе на GitHub"
+        if version and release.version != version:
+            # Still install whatever is latest
+            pass
+        if not is_app_update_available(release.version, APP_VERSION):
+            return "Уже установлена актуальная версия приложения"
+
+        import tempfile
+        from pathlib import Path
+
+        dest = Path(tempfile.gettempdir()) / f"ZapretManager_{release.version}.exe"
+        download_app_exe(release.exe_url, dest)
+        schedule_replace_and_restart(dest)
+        return f"Скачано {release.version}. Перезапуск…"
 
     def open_folder(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)

@@ -3,8 +3,9 @@ from __future__ import annotations
 import threading
 import tkinter as tk
 import traceback
+from tkinter import messagebox
 
-from config import APP_DIR
+from config import APP_DIR, APP_VERSION
 from controller import AppController
 from core import ensure_admin
 from tray import TrayController, acquire_single_instance
@@ -38,7 +39,6 @@ def main() -> None:
 
     controller = AppController()
     root = tk.Tk()
-    # Show window ASAP, start tray a moment later so first paint isn't blocked
     window = MainWindow(root, controller)
     tray_holder: dict = {}
 
@@ -47,25 +47,95 @@ def main() -> None:
         tray.run_detached()
         tray_holder["tray"] = tray
 
-        if controller.config.get("auto_check_updates", True):
-            def delayed_check():
-                # Always try: for empty install this unlocks download flow
-                msg = controller.check_updates(quiet_if_ok=controller.has_zapret())
-                tray_obj = tray_holder.get("tray")
-                if msg and tray_obj:
-                    try:
-                        tray_obj._notify(msg)
-                    except Exception:
-                        pass
+        def notify(msg: str) -> None:
+            if not msg:
+                return
+            try:
+                tray._notify(msg)
+            except Exception:
+                pass
 
-            def kick():
-                threading.Thread(target=delayed_check, daemon=True).start()
+        def background_jobs():
+            # 1) Silent zapret auto-update
+            try:
+                if controller.config.get("auto_update_zapret", True):
+                    msg = controller.auto_update_zapret_silent()
+                    if msg:
+                        root.after(0, lambda m=msg: notify(m))
+            except Exception as exc:
+                _log(f"zapret auto-update error: {exc}")
 
-            # Faster first-run check
-            root.after(1500 if not controller.has_zapret() else 8000, kick)
+            # 2) App self-update prompt
+            try:
+                available, remote_ver, prompt = controller.check_app_update()
+                if available and prompt:
+
+                    def ask():
+                        ok = messagebox.askyesno(
+                            "Обновление Zapret Manager",
+                            prompt,
+                            parent=root,
+                        )
+                        if not ok:
+                            controller.skip_app_update(remote_ver)
+                            return
+
+                        def work():
+                            try:
+                                msg = controller.apply_app_update(remote_ver)
+                                root.after(0, lambda: notify(msg))
+                                # Exit so bat can replace exe
+                                root.after(800, lambda: os_exit())
+                            except Exception as exc:
+                                err = f"Ошибка обновления приложения: {exc}"
+                                _log(err)
+                                root.after(
+                                    0,
+                                    lambda: messagebox.showerror(
+                                        "Обновление", err, parent=root
+                                    ),
+                                )
+
+                        threading.Thread(target=work, daemon=True).start()
+
+                    root.after(0, ask)
+            except Exception as exc:
+                _log(f"app update check error: {exc}")
+
+        def os_exit():
+            try:
+                root.quit()
+                root.destroy()
+            except Exception:
+                pass
+            import os
+
+            os._exit(0)
+
+        def kick():
+            threading.Thread(target=background_jobs, daemon=True).start()
+
+        # First-run without zapret: sooner. Otherwise give UI a moment.
+        delay = 2000 if not controller.has_zapret() else 5000
+        root.after(delay, kick)
+
+        # Periodic silent zapret check every 6 hours
+        def loop_zapret():
+            def job():
+                try:
+                    msg = controller.auto_update_zapret_silent()
+                    if msg:
+                        root.after(0, lambda m=msg: notify(m))
+                except Exception as exc:
+                    _log(f"periodic zapret update: {exc}")
+                root.after(6 * 60 * 60 * 1000, loop_zapret)
+
+            threading.Thread(target=job, daemon=True).start()
+
+        root.after(6 * 60 * 60 * 1000, loop_zapret)
 
     root.after(150, start_tray)
-    _log("ui started")
+    _log(f"ui started v{APP_VERSION}")
     root.mainloop()
 
 

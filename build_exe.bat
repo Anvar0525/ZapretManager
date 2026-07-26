@@ -4,21 +4,16 @@ cd /d "%~dp0"
 
 echo Installing/updating PyInstaller...
 py -3 -m pip install -q pyinstaller pillow pystray psutil
+if errorlevel 1 (
+  echo pip failed.
+  pause
+  exit /b 1
+)
 
 echo.
 echo Building ZapretManager.exe ...
-py -3 -m PyInstaller --noconfirm --clean ^
-  --name ZapretManager ^
-  --windowed ^
-  --onefile ^
-  --uac-admin ^
-  --icon "%~dp0assets\icon.ico" ^
-  --add-data "%~dp0assets;assets" ^
-  --paths "%~dp0" ^
-  --hidden-import=pystray._win32 ^
-  --hidden-import=PIL._tkinter_finder ^
-  --collect-all pystray ^
-  app.py
+REM Relative paths after cd — avoid %%~dp0 trailing-backslash quote bug
+py -3 -m PyInstaller --noconfirm --clean --name ZapretManager --windowed --onefile --uac-admin --icon "assets\icon.ico" --add-data "assets;assets" --paths "." --hidden-import=pystray._win32 --hidden-import=PIL._tkinter_finder --collect-all pystray app.py
 
 if errorlevel 1 (
   echo Build failed.
@@ -26,8 +21,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
-copy /Y "%~dp0dist\ZapretManager.exe" "%~dp0..\ZapretManager.exe" >nul
+copy /Y "dist\ZapretManager.exe" "..\ZapretManager.exe" >nul
 echo.
-echo Done: "%~dp0dist\ZapretManager.exe"
-echo Also copied to: "%~dp0..\ZapretManager.exe"
+echo Done: "%cd%\dist\ZapretManager.exe"
+echo Also copied to: "%cd%\..\ZapretManager.exe"
 pause

@@ -14,7 +14,7 @@ def get_app_dir() -> Path:
 
 APP_DIR = get_app_dir()
 CONFIG_PATH = APP_DIR / "config.json"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 
 def _default_zapret_root() -> Path:
@@ -38,6 +38,8 @@ DEFAULTS = {
     "autostart_strategy": False,
     "available_update": "",
     "auto_check_updates": True,
+    "auto_update_zapret": True,
+    "skip_app_version": "",
 }
 
 
