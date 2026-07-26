@@ -33,8 +33,8 @@ class MainWindow:
         self._photo = None
 
         self.root.title(f"Zapret Manager {APP_VERSION}")
-        self.root.geometry("460x520")
-        self.root.minsize(420, 480)
+        self.root.geometry("460x560")
+        self.root.minsize(420, 520)
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self._set_window_icon()
@@ -280,6 +280,45 @@ class MainWindow:
         self.btn_check.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6))
         self.btn_install.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
+        # Autostart — compact, two checkboxes only
+        auto_card = tk.Frame(
+            body, bg="white", highlightbackground="#D5E5E2", highlightthickness=1
+        )
+        auto_card.pack(fill=tk.X, pady=(0, 12))
+        auto_inner = tk.Frame(auto_card, bg="white")
+        auto_inner.pack(fill=tk.X, padx=14, pady=10)
+
+        self.var_autostart_windows = tk.BooleanVar(
+            value=bool(self.controller.config.get("autostart_windows"))
+        )
+        self.var_autostart_strategy = tk.BooleanVar(
+            value=bool(self.controller.config.get("autostart_strategy"))
+        )
+        tk.Checkbutton(
+            auto_inner,
+            text="Запускать с Windows (без UAC каждый раз)",
+            variable=self.var_autostart_windows,
+            command=self._on_toggle_autostart_windows,
+            bg="white",
+            fg=TEXT,
+            activebackground="white",
+            selectcolor="white",
+            font=("Segoe UI", 9),
+            anchor=tk.W,
+        ).pack(fill=tk.X)
+        tk.Checkbutton(
+            auto_inner,
+            text="При старте включать обход",
+            variable=self.var_autostart_strategy,
+            command=self._on_toggle_autostart_strategy,
+            bg="white",
+            fg=TEXT,
+            activebackground="white",
+            selectcolor="white",
+            font=("Segoe UI", 9),
+            anchor=tk.W,
+        ).pack(fill=tk.X, pady=(4, 0))
+
         # Bottom
         bottom = tk.Frame(body, bg=BG)
         bottom.pack(fill=tk.X, pady=(2, 0))
@@ -443,6 +482,9 @@ class MainWindow:
         self._set_btn_state(self.btn_install, not busy)
         self._set_btn_state(self.btn_download, not busy)
         self.strategy_combo.configure(state=("disabled" if busy else "readonly"))
+        # Keep checkboxes in sync
+        self.var_autostart_windows.set(bool(self.controller.config.get("autostart_windows")))
+        self.var_autostart_strategy.set(bool(self.controller.config.get("autostart_strategy")))
 
     def show(self) -> None:
         try:
@@ -539,3 +581,20 @@ class MainWindow:
         else:
             self.controller.set_strategy(name, restart_if_running=False)
             self._toast(f"Стратегия: {name}")
+
+    def _on_toggle_autostart_windows(self) -> None:
+        enabled = bool(self.var_autostart_windows.get())
+
+        def work():
+            return self.controller.set_autostart_windows(enabled)
+
+        self._run_bg(work)
+
+    def _on_toggle_autostart_strategy(self) -> None:
+        enabled = bool(self.var_autostart_strategy.get())
+        self.controller.set_autostart_strategy(enabled)
+        self._toast(
+            "При старте обход будет включаться"
+            if enabled
+            else "При старте обход не включается"
+        )

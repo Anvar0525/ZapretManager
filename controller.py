@@ -20,6 +20,7 @@ from app_updater import (
     is_app_update_available,
     schedule_replace_and_restart,
 )
+from autostart import is_autostart_enabled, set_autostart
 
 Listener = Callable[[], None]
 
@@ -100,7 +101,35 @@ class AppController:
             strategies = list_strategies(latest.path)
             if self.config.get("strategy") not in strategies and strategies:
                 self.config["strategy"] = strategies[0]
+        # Sync checkbox with real scheduled task; refresh task path if enabled
+        try:
+            enabled = is_autostart_enabled()
+            self.config["autostart_windows"] = enabled
+            if enabled:
+                # Keep TR pointing at current exe/script after updates
+                set_autostart(True)
+        except Exception:
+            pass
+        save_config(self.config)
+
+    def set_autostart_windows(self, enabled: bool) -> str:
+        try:
+            set_autostart(enabled)
+            self.config["autostart_windows"] = enabled
             save_config(self.config)
+            self.notify()
+            return "Автозапуск с Windows включён" if enabled else "Автозапуск выключен"
+        except Exception as exc:
+            # Revert UI expectation
+            self.config["autostart_windows"] = is_autostart_enabled()
+            save_config(self.config)
+            self.notify()
+            return f"Ошибка автозапуска: {exc}"
+
+    def set_autostart_strategy(self, enabled: bool) -> None:
+        self.config["autostart_strategy"] = bool(enabled)
+        save_config(self.config)
+        self.notify()
 
     def set_strategy(self, name: str, restart_if_running: bool = True) -> None:
         self.config["strategy"] = name

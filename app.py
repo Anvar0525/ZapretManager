@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 import tkinter as tk
 import traceback
@@ -23,6 +24,8 @@ def _log(message: str) -> None:
 
 
 def main() -> None:
+    silent_start = "--autostart" in sys.argv
+
     if not acquire_single_instance():
         try:
             import ctypes
@@ -42,6 +45,10 @@ def main() -> None:
     window = MainWindow(root, controller)
     tray_holder: dict = {}
 
+    if silent_start:
+        # Start in tray only — no window flash on Windows logon
+        root.withdraw()
+
     def start_tray():
         tray = TrayController(controller, window)
         tray.run_detached()
@@ -55,6 +62,16 @@ def main() -> None:
             except Exception:
                 pass
 
+        def start_bypass_if_needed():
+            if not controller.config.get("autostart_strategy"):
+                return
+            if not controller.has_zapret():
+                return
+            if controller.status_dict()["running"]:
+                return
+            msg = controller.start()
+            root.after(0, lambda m=msg: notify(m))
+
         def background_jobs():
             # 1) Silent zapret auto-update
             try:
@@ -65,40 +82,54 @@ def main() -> None:
             except Exception as exc:
                 _log(f"zapret auto-update error: {exc}")
 
-            # 2) App self-update prompt
+            # 2) Enable bypass on start (after possible update)
+            try:
+                start_bypass_if_needed()
+            except Exception as exc:
+                _log(f"autostart strategy error: {exc}")
+
+            # 3) App self-update: modal only for manual launches
             try:
                 available, remote_ver, prompt = controller.check_app_update()
-                if available and prompt:
+                if not available or not prompt:
+                    return
+                if silent_start:
+                    root.after(
+                        0,
+                        lambda: notify(
+                            f"Доступна новая версия приложения: {remote_ver}"
+                        ),
+                    )
+                    return
 
-                    def ask():
-                        ok = messagebox.askyesno(
-                            "Обновление Zapret Manager",
-                            prompt,
-                            parent=root,
-                        )
-                        if not ok:
-                            controller.skip_app_update(remote_ver)
-                            return
+                def ask():
+                    ok = messagebox.askyesno(
+                        "Обновление Zapret Manager",
+                        prompt,
+                        parent=root,
+                    )
+                    if not ok:
+                        controller.skip_app_update(remote_ver)
+                        return
 
-                        def work():
-                            try:
-                                msg = controller.apply_app_update(remote_ver)
-                                root.after(0, lambda: notify(msg))
-                                # Exit so bat can replace exe
-                                root.after(800, lambda: os_exit())
-                            except Exception as exc:
-                                err = f"Ошибка обновления приложения: {exc}"
-                                _log(err)
-                                root.after(
-                                    0,
-                                    lambda: messagebox.showerror(
-                                        "Обновление", err, parent=root
-                                    ),
-                                )
+                    def work():
+                        try:
+                            msg = controller.apply_app_update(remote_ver)
+                            root.after(0, lambda: notify(msg))
+                            root.after(800, os_exit)
+                        except Exception as exc:
+                            err = f"Ошибка обновления приложения: {exc}"
+                            _log(err)
+                            root.after(
+                                0,
+                                lambda: messagebox.showerror(
+                                    "Обновление", err, parent=root
+                                ),
+                            )
 
-                        threading.Thread(target=work, daemon=True).start()
+                    threading.Thread(target=work, daemon=True).start()
 
-                    root.after(0, ask)
+                root.after(0, ask)
             except Exception as exc:
                 _log(f"app update check error: {exc}")
 
@@ -115,11 +146,9 @@ def main() -> None:
         def kick():
             threading.Thread(target=background_jobs, daemon=True).start()
 
-        # First-run without zapret: sooner. Otherwise give UI a moment.
-        delay = 2000 if not controller.has_zapret() else 5000
+        delay = 1500 if silent_start else (2000 if not controller.has_zapret() else 4000)
         root.after(delay, kick)
 
-        # Periodic silent zapret check every 6 hours
         def loop_zapret():
             def job():
                 try:
@@ -135,7 +164,7 @@ def main() -> None:
         root.after(6 * 60 * 60 * 1000, loop_zapret)
 
     root.after(150, start_tray)
-    _log(f"ui started v{APP_VERSION}")
+    _log(f"ui started v{APP_VERSION} silent={silent_start}")
     root.mainloop()
 
 
