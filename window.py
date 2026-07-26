@@ -6,7 +6,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, messagebox
 
-from config import APP_DIR
+from config import APP_DIR, APP_VERSION
 from controller import AppController
 
 # Brand palette (matches app icon)
@@ -32,9 +32,9 @@ class MainWindow:
         self._busy = False
         self._photo = None
 
-        self.root.title("Zapret Manager")
-        self.root.geometry("460x560")
-        self.root.minsize(420, 520)
+        self.root.title(f"Zapret Manager {APP_VERSION}")
+        self.root.geometry("460x520")
+        self.root.minsize(420, 480)
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self._set_window_icon()
@@ -211,7 +211,7 @@ class MainWindow:
         self.btn_stop.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=3)
         self.btn_restart.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(6, 0))
 
-        # Settings
+        # Settings — strategy only (always newest zapret)
         form_card = tk.Frame(body, bg="white", highlightbackground="#D5E5E2", highlightthickness=1)
         form_card.pack(fill=tk.X, pady=(0, 12))
         form = tk.Frame(form_card, bg="white")
@@ -224,18 +224,8 @@ class MainWindow:
         self.strategy_combo = ttk.Combobox(
             form, textvariable=self.strategy_var, state="readonly", style="App.TCombobox"
         )
-        self.strategy_combo.grid(row=1, column=0, sticky=tk.EW, pady=(0, 10))
+        self.strategy_combo.grid(row=1, column=0, sticky=tk.EW)
         self.strategy_combo.bind("<<ComboboxSelected>>", self._on_strategy_selected)
-
-        tk.Label(form, text="Версия", bg="white", fg=MUTED, font=("Segoe UI", 9)).grid(
-            row=2, column=0, sticky=tk.W, pady=(0, 6)
-        )
-        self.version_var = tk.StringVar()
-        self.version_combo = ttk.Combobox(
-            form, textvariable=self.version_var, state="readonly", style="App.TCombobox"
-        )
-        self.version_combo.grid(row=3, column=0, sticky=tk.EW)
-        self.version_combo.bind("<<ComboboxSelected>>", self._on_version_selected)
         form.columnconfigure(0, weight=1)
 
         # Updates
@@ -304,6 +294,13 @@ class MainWindow:
             font=("Segoe UI", 9),
             cursor="hand2",
         ).pack(side=tk.LEFT)
+        tk.Label(
+            bottom,
+            text=f"v{APP_VERSION}",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 8),
+        ).pack(side=tk.RIGHT, padx=(8, 0))
         tk.Button(
             bottom,
             text="В трей",
@@ -424,14 +421,10 @@ class MainWindow:
         if full or not self._lists_loaded:
             strategies = self.controller.strategies()
             self.strategy_combo["values"] = strategies
-            versions = self.controller.versions()
-            self.version_combo["values"] = versions
             self._lists_loaded = True
 
         if s["strategy"]:
             self.strategy_var.set(s["strategy"])
-        if s["version_folder"]:
-            self.version_var.set(s["version_folder"])
 
         upd_text = self.controller.update_status_label()
         if not has_zapret:
@@ -447,11 +440,9 @@ class MainWindow:
         self._set_btn_state(self.btn_stop, s["running"] and not busy)
         self._set_btn_state(self.btn_restart, has_zapret and not busy)
         self._set_btn_state(self.btn_check, not busy)
-        # Always allow download/update (first install or upgrade)
         self._set_btn_state(self.btn_install, not busy)
         self._set_btn_state(self.btn_download, not busy)
         self.strategy_combo.configure(state=("disabled" if busy else "readonly"))
-        self.version_combo.configure(state=("disabled" if busy else "readonly"))
 
     def show(self) -> None:
         try:
@@ -548,13 +539,3 @@ class MainWindow:
         else:
             self.controller.set_strategy(name, restart_if_running=False)
             self._toast(f"Стратегия: {name}")
-
-    def _on_version_selected(self, _event=None) -> None:
-        name = self.version_var.get()
-        if not name:
-            return
-        if name == self.controller.config.get("version_folder"):
-            return
-        self.controller.set_version(name)
-        self._toast(f"Версия: {name}")
-        self.refresh(full=True)

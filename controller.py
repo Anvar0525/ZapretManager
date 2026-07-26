@@ -5,9 +5,8 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-from config import APP_DIR, load_config, save_config
+from config import APP_DIR, APP_VERSION, load_config, save_config
 from core import (
-    discover_versions,
     list_strategies,
     pick_version,
     start_strategy,
@@ -26,7 +25,6 @@ class AppController:
         self._updating = False
         self._listeners: list[Listener] = []
         self._strategies_cache: list[str] | None = None
-        self._versions_cache: list[str] | None = None
         self._bootstrap_selection()
 
     def add_listener(self, callback: Listener) -> None:
@@ -48,7 +46,8 @@ class AppController:
         return Path(self.config["zapret_root"])
 
     def selected_version(self):
-        return pick_version(self.root, self.config.get("version_folder", ""))
+        # Always use the newest local zapret folder
+        return pick_version(self.root, "")
 
     def strategies(self) -> list[str]:
         if self._strategies_cache is None:
@@ -56,14 +55,8 @@ class AppController:
             self._strategies_cache = list_strategies(version.path) if version else []
         return self._strategies_cache
 
-    def versions(self) -> list[str]:
-        if self._versions_cache is None:
-            self._versions_cache = [v.name for v in reversed(discover_versions(self.root))]
-        return self._versions_cache
-
     def invalidate_lists(self) -> None:
         self._strategies_cache = None
-        self._versions_cache = None
 
     def status_dict(self) -> dict:
         running = winws_running()
@@ -75,6 +68,7 @@ class AppController:
             "strategy": self.config.get("strategy", ""),
             "available_update": self.config.get("available_update") or "",
             "updating": self._updating,
+            "app_version": APP_VERSION,
         }
 
     def status_text(self) -> str:
@@ -88,20 +82,18 @@ class AppController:
             return "Обновление: выполняется…"
         avail = self.config.get("available_update") or ""
         if avail:
-            return f"Доступно: {avail}"
+            return f"Доступно zapret: {avail}"
         version = self.selected_version()
         local = version.version if version else "?"
-        return f"Актуально (v{local})"
+        return f"Zapret актуален (v{local})"
 
     def _bootstrap_selection(self) -> None:
-        version = self.selected_version()
-        if version and not self.config.get("version_folder"):
-            self.config["version_folder"] = version.name
-        if version:
-            strategies = list_strategies(version.path)
-            if self.config.get("strategy") not in strategies:
-                if strategies:
-                    self.config["strategy"] = strategies[0]
+        latest = self.selected_version()
+        if latest:
+            self.config["version_folder"] = latest.name
+            strategies = list_strategies(latest.path)
+            if self.config.get("strategy") not in strategies and strategies:
+                self.config["strategy"] = strategies[0]
             save_config(self.config)
 
     def set_strategy(self, name: str, restart_if_running: bool = True) -> None:
@@ -111,17 +103,6 @@ class AppController:
             self.start()
         else:
             self.notify()
-
-    def set_version(self, folder_name: str) -> None:
-        self.config["version_folder"] = folder_name
-        self.invalidate_lists()
-        version = pick_version(self.root, folder_name)
-        if version:
-            strategies = self.strategies()
-            if self.config.get("strategy") not in strategies and strategies:
-                self.config["strategy"] = strategies[0]
-        save_config(self.config)
-        self.notify()
 
     def start(self) -> str:
         with self._lock:
