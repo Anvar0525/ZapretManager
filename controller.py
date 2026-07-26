@@ -21,6 +21,7 @@ from app_updater import (
     schedule_replace_and_restart,
 )
 from autostart import is_autostart_enabled, set_autostart
+from strategy_picker import find_working_strategy
 
 Listener = Callable[[], None]
 
@@ -30,6 +31,8 @@ class AppController:
         self.config = load_config()
         self._lock = threading.Lock()
         self._updating = False
+        self._picking = False
+        self._pick_status = ""
         self._listeners: list[Listener] = []
         self._strategies_cache: list[str] | None = None
         self._bootstrap_selection()
@@ -46,7 +49,11 @@ class AppController:
 
     @property
     def updating(self) -> bool:
-        return self._updating
+        return self._updating or self._picking
+
+    @property
+    def picking(self) -> bool:
+        return self._picking
 
     @property
     def root(self) -> Path:
@@ -74,7 +81,10 @@ class AppController:
             "version_folder": version.name if version else "",
             "strategy": self.config.get("strategy", ""),
             "available_update": self.config.get("available_update") or "",
-            "updating": self._updating,
+            "updating": self._updating or self._picking,
+            "picking": self._picking,
+            "pick_status": self._pick_status,
+            "strategy_verified": bool(self.config.get("strategy_verified")),
             "app_version": APP_VERSION,
         }
 
@@ -85,6 +95,8 @@ class AppController:
         return f"Zapret {state} · v{s['version']} · {s['strategy']}{upd}"
 
     def update_status_label(self) -> str:
+        if self._picking:
+            return "Идет подбор стратегии"
         if self._updating:
             return "Обновление: выполняется…"
         avail = self.config.get("available_update") or ""
@@ -99,8 +111,14 @@ class AppController:
         if latest:
             self.config["version_folder"] = latest.name
             strategies = list_strategies(latest.path)
-            if self.config.get("strategy") not in strategies and strategies:
-                self.config["strategy"] = strategies[0]
+            # Don't invent a "verified" strategy on first run
+            if self.config.get("strategy") not in strategies:
+                if self.config.get("strategy_verified") and strategies:
+                    self.config["strategy"] = strategies[0]
+                elif not self.config.get("strategy"):
+                    self.config["strategy"] = (
+                        "general.bat" if "general.bat" in strategies else (strategies[0] if strategies else "")
+                    )
         # Sync checkbox with real scheduled task; refresh task path if enabled
         try:
             enabled = is_autostart_enabled()
@@ -133,11 +151,53 @@ class AppController:
 
     def set_strategy(self, name: str, restart_if_running: bool = True) -> None:
         self.config["strategy"] = name
+        self.config["strategy_verified"] = True
         save_config(self.config)
         if restart_if_running and winws_running():
             self.start()
         else:
             self.notify()
+
+    def needs_strategy_pick(self) -> bool:
+        return not bool(self.config.get("strategy_verified"))
+
+    def pick_strategy(self) -> str:
+        """Auto-pick working strategy (ALT first). Leaves winws running on success."""
+        if self._picking or self._updating:
+            return "Уже выполняется другая операция"
+        version = self.selected_version()
+        if not version:
+            return "Сначала скачайте zapret"
+
+        self._picking = True
+        self._pick_status = "Идет подбор стратегии"
+        self.notify()
+        try:
+            chosen, message = find_working_strategy(
+                version.path,
+                strategies=self.strategies(),
+                on_progress=lambda text: self._set_pick_status(text),
+            )
+            if chosen:
+                self.config["strategy"] = chosen
+                self.config["strategy_verified"] = True
+                self.config["version_folder"] = version.name
+                save_config(self.config)
+                self.invalidate_lists()
+                return message
+            self.config["strategy_verified"] = False
+            save_config(self.config)
+            return message
+        except Exception as exc:
+            return f"Ошибка подбора: {exc}"
+        finally:
+            self._picking = False
+            self._pick_status = ""
+            self.notify()
+
+    def _set_pick_status(self, text: str) -> None:
+        self._pick_status = text
+        self.notify()
 
     def start(self) -> str:
         with self._lock:
@@ -247,6 +307,14 @@ class AppController:
         finally:
             self._updating = False
             self.notify()
+        # First install: auto-pick once after zapret appears
+        if (
+            msg
+            and not msg.startswith("Ошибка")
+            and self.needs_strategy_pick()
+            and self.selected_version()
+        ):
+            return self.pick_strategy()
         return msg
 
     def install_update(self) -> str:

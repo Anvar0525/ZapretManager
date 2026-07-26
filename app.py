@@ -73,6 +73,19 @@ def main() -> None:
             root.after(0, lambda m=msg: notify(m))
 
         def background_jobs():
+            # 0) First-run strategy pick (once), before enabling bypass
+            try:
+                if (
+                    controller.has_zapret()
+                    and controller.needs_strategy_pick()
+                    and not controller.picking
+                ):
+                    msg = controller.pick_strategy()
+                    if msg:
+                        root.after(0, lambda m=msg: notify(m))
+            except Exception as exc:
+                _log(f"strategy pick error: {exc}")
+
             # 1) Silent zapret auto-update
             try:
                 if controller.config.get("auto_update_zapret", True):
@@ -82,7 +95,7 @@ def main() -> None:
             except Exception as exc:
                 _log(f"zapret auto-update error: {exc}")
 
-            # 2) Enable bypass on start (after possible update)
+            # 2) Enable bypass on start (after possible update / pick)
             try:
                 start_bypass_if_needed()
             except Exception as exc:

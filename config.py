@@ -14,7 +14,7 @@ def get_app_dir() -> Path:
 
 APP_DIR = get_app_dir()
 CONFIG_PATH = APP_DIR / "config.json"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.1"
 
 
 def _default_zapret_root() -> Path:
@@ -41,6 +41,7 @@ DEFAULTS = {
     "auto_check_updates": True,
     "auto_update_zapret": True,
     "skip_app_version": "",
+    "strategy_verified": False,
 }
 
 
@@ -53,6 +54,9 @@ def load_config() -> dict:
             loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
                 data.update({k: loaded[k] for k in DEFAULTS if k in loaded})
+                # Upgrade from older Manager: keep existing strategy, don't re-pick
+                if "strategy_verified" not in loaded and loaded.get("strategy"):
+                    data["strategy_verified"] = True
         except (OSError, json.JSONDecodeError):
             pass
     return data

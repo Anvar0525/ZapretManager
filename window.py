@@ -4,7 +4,7 @@ import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 
 from config import APP_DIR, APP_VERSION
 from controller import AppController
@@ -31,14 +31,14 @@ class MainWindow:
         self.controller = controller
         self._busy = False
         self._photo = None
+        self._page = "main"  # main | settings
 
         self.root.title(f"Zapret Manager {APP_VERSION}")
-        self.root.geometry("460x560")
-        self.root.minsize(420, 520)
+        self.root.geometry("460x440")
+        self.root.minsize(420, 400)
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self._set_window_icon()
-        self._setup_styles()
 
         # Header
         header = tk.Frame(self.root, bg=TEAL, height=64)
@@ -81,13 +81,81 @@ class MainWindow:
         )
         self.badge.pack(side=tk.RIGHT, anchor=tk.CENTER)
 
-        # Body
+        # Body — two pages, only one visible
         body = tk.Frame(self.root, bg=BG)
-        body.pack(fill=tk.BOTH, expand=True, padx=16, pady=14)
+        body.pack(fill=tk.BOTH, expand=True, padx=16, pady=(14, 0))
+        self._body = body
 
+        self.page_main = tk.Frame(body, bg=BG)
+        self.page_settings = tk.Frame(body, bg=BG)
+        self._build_main_page(self.page_main)
+        self._build_settings_page(self.page_settings)
+
+        # Bottom (shared)
+        bottom = tk.Frame(self.root, bg=BG)
+        bottom.pack(fill=tk.X, padx=16, pady=(8, 4))
+        self.btn_nav = tk.Button(
+            bottom,
+            text="Настройки",
+            command=self._toggle_page,
+            bg=BG,
+            fg=TEAL,
+            activebackground=TEAL_SOFT,
+            relief=tk.FLAT,
+            font=("Segoe UI Semibold", 9),
+            cursor="hand2",
+        )
+        self.btn_nav.pack(side=tk.LEFT)
+        tk.Button(
+            bottom,
+            text="Открыть папку",
+            command=self.controller.open_folder,
+            bg=BG,
+            fg=TEAL,
+            activebackground=TEAL_SOFT,
+            relief=tk.FLAT,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        tk.Label(
+            bottom,
+            text=f"v{APP_VERSION}",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 8),
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+        tk.Button(
+            bottom,
+            text="В трей",
+            command=self.hide_to_tray,
+            bg=BG,
+            fg=MUTED,
+            activebackground=OFF_BG,
+            relief=tk.FLAT,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+        ).pack(side=tk.RIGHT)
+
+        self._toast_var = tk.StringVar(value="")
+        self.toast_label = tk.Label(
+            self.root,
+            textvariable=self._toast_var,
+            bg=BG,
+            fg=TEAL,
+            font=("Segoe UI", 9),
+            anchor=tk.W,
+        )
+        self.toast_label.pack(fill=tk.X, padx=16, pady=(0, 10))
+
+        self._show_page("main")
+        self.controller.add_listener(self._schedule_refresh)
+        self.refresh(full=True)
+        self.root.after(4000, self._poll_status)
+
+    def _build_main_page(self, parent: tk.Frame) -> None:
         # First-run / missing zapret banner
         self.setup_card = tk.Frame(
-            body, bg=WARN_BG, highlightbackground="#F6D89C", highlightthickness=1
+            parent, bg=WARN_BG, highlightbackground="#F6D89C", highlightthickness=1
         )
         setup_inner = tk.Frame(self.setup_card, bg=WARN_BG)
         setup_inner.pack(fill=tk.X, padx=12, pady=10)
@@ -124,11 +192,11 @@ class MainWindow:
             pady=7,
         )
         self.btn_download.pack(fill=tk.X)
-        self.setup_card.pack(fill=tk.X, pady=(0, 12))
+        # packed in refresh when needed
 
         # Status card
         self.status_card = tk.Frame(
-            body, bg="white", highlightbackground="#D5E5E2", highlightthickness=1
+            parent, bg="white", highlightbackground="#D5E5E2", highlightthickness=1
         )
         self.status_card.pack(fill=tk.X, pady=(0, 12))
 
@@ -157,7 +225,7 @@ class MainWindow:
         ).pack(fill=tk.X, pady=(4, 0))
 
         # Main actions
-        btns = tk.Frame(body, bg=BG)
+        btns = tk.Frame(parent, bg=BG)
         btns.pack(fill=tk.X, pady=(0, 12))
 
         self.btn_start = tk.Button(
@@ -211,33 +279,66 @@ class MainWindow:
         self.btn_stop.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=3)
         self.btn_restart.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(6, 0))
 
-        # Settings — strategy only (always newest zapret)
-        form_card = tk.Frame(body, bg="white", highlightbackground="#D5E5E2", highlightthickness=1)
-        form_card.pack(fill=tk.X, pady=(0, 12))
+        # Strategy
+        form_card = tk.Frame(
+            parent, bg="white", highlightbackground="#D5E5E2", highlightthickness=1
+        )
+        form_card.pack(fill=tk.X, pady=(0, 4))
         form = tk.Frame(form_card, bg="white")
         form.pack(fill=tk.X, padx=14, pady=12)
 
-        tk.Label(form, text="Стратегия", bg="white", fg=MUTED, font=("Segoe UI", 9)).grid(
-            row=0, column=0, sticky=tk.W, pady=(0, 6)
+        tk.Label(
+            form, text="Стратегия", bg="white", fg=MUTED, font=("Segoe UI", 9)
+        ).pack(anchor=tk.W)
+        self.strategy_name_var = tk.StringVar(value="—")
+        tk.Label(
+            form,
+            textvariable=self.strategy_name_var,
+            bg="white",
+            fg=TEXT,
+            font=("Segoe UI Semibold", 10),
+            anchor=tk.W,
+            wraplength=400,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, pady=(4, 10))
+        self.btn_pick = tk.Button(
+            form,
+            text="Подбор рабочей стратегии",
+            command=self._on_pick_strategy,
+            bg=TEAL_SOFT,
+            fg=TEAL_DARK,
+            activebackground="#D0EBE8",
+            activeforeground=TEAL_DARK,
+            disabledforeground="#A1A1AA",
+            relief=tk.FLAT,
+            font=("Segoe UI Semibold", 9),
+            cursor="hand2",
+            pady=7,
         )
-        self.strategy_var = tk.StringVar()
-        self.strategy_combo = ttk.Combobox(
-            form, textvariable=self.strategy_var, state="readonly", style="App.TCombobox"
-        )
-        self.strategy_combo.grid(row=1, column=0, sticky=tk.EW)
-        self.strategy_combo.bind("<<ComboboxSelected>>", self._on_strategy_selected)
-        form.columnconfigure(0, weight=1)
+        self.btn_pick.pack(fill=tk.X)
+
+    def _build_settings_page(self, parent: tk.Frame) -> None:
+        tk.Label(
+            parent,
+            text="Настройки",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI Semibold", 12),
+            anchor=tk.W,
+        ).pack(fill=tk.X, pady=(0, 10))
 
         # Updates
-        upd_card = tk.Frame(body, bg="white", highlightbackground="#D5E5E2", highlightthickness=1)
+        upd_card = tk.Frame(
+            parent, bg="white", highlightbackground="#D5E5E2", highlightthickness=1
+        )
         upd_card.pack(fill=tk.X, pady=(0, 12))
         upd = tk.Frame(upd_card, bg="white")
         upd.pack(fill=tk.X, padx=14, pady=12)
 
         tk.Label(
-            upd, text="Обновления", bg="white", fg=TEXT, font=("Segoe UI Semibold", 10)
+            upd, text="Обновления zapret", bg="white", fg=TEXT, font=("Segoe UI Semibold", 10)
         ).pack(anchor=tk.W)
-        self.update_var = tk.StringVar(value="Нажмите «Проверить» или «Скачать zapret»")
+        self.update_var = tk.StringVar(value="…")
         self.update_label = tk.Label(
             upd,
             textvariable=self.update_var,
@@ -280,13 +381,22 @@ class MainWindow:
         self.btn_check.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6))
         self.btn_install.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
-        # Autostart — compact, two checkboxes only
+        # Autostart
         auto_card = tk.Frame(
-            body, bg="white", highlightbackground="#D5E5E2", highlightthickness=1
+            parent, bg="white", highlightbackground="#D5E5E2", highlightthickness=1
         )
-        auto_card.pack(fill=tk.X, pady=(0, 12))
+        auto_card.pack(fill=tk.X, pady=(0, 4))
         auto_inner = tk.Frame(auto_card, bg="white")
         auto_inner.pack(fill=tk.X, padx=14, pady=10)
+
+        tk.Label(
+            auto_inner,
+            text="Автозапуск",
+            bg="white",
+            fg=TEXT,
+            font=("Segoe UI Semibold", 10),
+            anchor=tk.W,
+        ).pack(fill=tk.X, pady=(0, 6))
 
         self.var_autostart_windows = tk.BooleanVar(
             value=bool(self.controller.config.get("autostart_windows"))
@@ -319,69 +429,21 @@ class MainWindow:
             anchor=tk.W,
         ).pack(fill=tk.X, pady=(4, 0))
 
-        # Bottom
-        bottom = tk.Frame(body, bg=BG)
-        bottom.pack(fill=tk.X, pady=(2, 0))
-        tk.Button(
-            bottom,
-            text="Открыть папку",
-            command=self.controller.open_folder,
-            bg=BG,
-            fg=TEAL,
-            activebackground=TEAL_SOFT,
-            relief=tk.FLAT,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-        ).pack(side=tk.LEFT)
-        tk.Label(
-            bottom,
-            text=f"v{APP_VERSION}",
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 8),
-        ).pack(side=tk.RIGHT, padx=(8, 0))
-        tk.Button(
-            bottom,
-            text="В трей",
-            command=self.hide_to_tray,
-            bg=BG,
-            fg=MUTED,
-            activebackground=OFF_BG,
-            relief=tk.FLAT,
-            font=("Segoe UI", 9),
-            cursor="hand2",
-        ).pack(side=tk.RIGHT)
+    def _show_page(self, page: str) -> None:
+        self._page = page
+        self.page_main.pack_forget()
+        self.page_settings.pack_forget()
+        if page == "settings":
+            self.page_settings.pack(fill=tk.BOTH, expand=True)
+            self.btn_nav.configure(text="Назад")
+        else:
+            self.page_main.pack(fill=tk.BOTH, expand=True)
+            self.btn_nav.configure(text="Настройки")
+            # Re-apply first-run banner packing relative to status_card
+            self.refresh(full=False)
 
-        self._toast_var = tk.StringVar(value="")
-        self.toast_label = tk.Label(
-            body,
-            textvariable=self._toast_var,
-            bg=BG,
-            fg=TEAL,
-            font=("Segoe UI", 9),
-            anchor=tk.W,
-        )
-        self.toast_label.pack(fill=tk.X, pady=(10, 0))
-
-        self.controller.add_listener(self._schedule_refresh)
-        self._lists_loaded = False
-        self.refresh(full=True)
-        self.root.after(4000, self._poll_status)
-
-    def _setup_styles(self) -> None:
-        style = ttk.Style(self.root)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure(
-            "App.TCombobox",
-            fieldbackground="white",
-            background="white",
-            foreground=TEXT,
-            arrowcolor=TEAL,
-            padding=4,
-        )
+    def _toggle_page(self) -> None:
+        self._show_page("main" if self._page == "settings" else "settings")
 
     def _load_header_icon(self, parent: tk.Frame) -> None:
         try:
@@ -434,42 +496,43 @@ class MainWindow:
     def refresh(self, full: bool = True) -> None:
         s = self.controller.status_dict()
         has_zapret = self.controller.has_zapret()
-        state = "ON" if s["running"] else "OFF"
-        self.status_var.set(f"Статус: {state}  ·  v{s['version']}")
-        self.hint_var.set(f"Стратегия: {s['strategy'] or '—'}")
+        picking = bool(s.get("picking"))
 
-        # First-run banner
-        self.setup_path_var.set(
-            f"Скачается сюда:\n{self.controller.root}"
-        )
+        if picking:
+            self.status_var.set("Идет подбор стратегии")
+            self.hint_var.set("")
+            self.badge.configure(text=" … ", bg=WARN_BG, fg=WARN)
+            self.status_label.configure(fg=WARN)
+        else:
+            state = "ON" if s["running"] else "OFF"
+            self.status_var.set(f"Статус: {state}  ·  v{s['version']}")
+            self.hint_var.set("")
+            if s["running"]:
+                self.badge.configure(text=" ON ", bg=OK_BG, fg=OK)
+                self.status_label.configure(fg=OK)
+            else:
+                self.badge.configure(text=" OFF ", bg=OFF_BG, fg=OFF)
+                self.status_label.configure(fg=TEXT)
+
+        self.strategy_name_var.set(s["strategy"] or "—")
+
+        # First-run banner (only relevant on main page)
+        self.setup_path_var.set(f"Скачается сюда:\n{self.controller.root}")
         if has_zapret:
             self.setup_card.pack_forget()
-        else:
+        elif self._page == "main":
             try:
                 self.setup_card.pack(fill=tk.X, pady=(0, 12), before=self.status_card)
             except tk.TclError:
                 self.setup_card.pack(fill=tk.X, pady=(0, 12))
 
-        if s["running"]:
-            self.badge.configure(text=" ON ", bg=OK_BG, fg=OK)
-            self.status_label.configure(fg=OK)
-        else:
-            self.badge.configure(text=" OFF ", bg=OFF_BG, fg=OFF)
-            self.status_label.configure(fg=TEXT)
-
-        if full or not self._lists_loaded:
-            strategies = self.controller.strategies()
-            self.strategy_combo["values"] = strategies
-            self._lists_loaded = True
-
-        if s["strategy"]:
-            self.strategy_var.set(s["strategy"])
-
         upd_text = self.controller.update_status_label()
         if not has_zapret:
-            upd_text = "Zapret не найден — нажмите «Скачать zapret» выше"
+            upd_text = "Zapret не найден — нажмите «Скачать / обновить»"
         self.update_var.set(upd_text)
-        if s["available_update"] or not has_zapret:
+        if picking:
+            self.update_label.configure(fg=WARN, bg="white")
+        elif s["available_update"] or not has_zapret:
             self.update_label.configure(fg=WARN, bg="white")
         else:
             self.update_label.configure(fg=MUTED, bg="white")
@@ -481,8 +544,7 @@ class MainWindow:
         self._set_btn_state(self.btn_check, not busy)
         self._set_btn_state(self.btn_install, not busy)
         self._set_btn_state(self.btn_download, not busy)
-        self.strategy_combo.configure(state=("disabled" if busy else "readonly"))
-        # Keep checkboxes in sync
+        self._set_btn_state(self.btn_pick, has_zapret and not busy)
         self.var_autostart_windows.set(bool(self.controller.config.get("autostart_windows")))
         self.var_autostart_strategy.set(bool(self.controller.config.get("autostart_strategy")))
 
@@ -565,22 +627,14 @@ class MainWindow:
             return
         self._run_bg(self.controller.download_latest)
 
-    def _on_strategy_selected(self, _event=None) -> None:
-        name = self.strategy_var.get()
-        if not name:
+    def _on_pick_strategy(self) -> None:
+        if not messagebox.askyesno(
+            "Подбор стратегии",
+            "Подбор стратегии может занять минуту. Продолжить?",
+            parent=self.root,
+        ):
             return
-        if name == self.controller.config.get("strategy"):
-            return
-        was_running = self.controller.status_dict()["running"]
-        if was_running:
-            self.controller.config["strategy"] = name
-            from config import save_config
-
-            save_config(self.controller.config)
-            self._run_bg(self.controller.restart)
-        else:
-            self.controller.set_strategy(name, restart_if_running=False)
-            self._toast(f"Стратегия: {name}")
+        self._run_bg(self.controller.pick_strategy)
 
     def _on_toggle_autostart_windows(self) -> None:
         enabled = bool(self.var_autostart_windows.get())
