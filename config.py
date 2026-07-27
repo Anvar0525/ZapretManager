@@ -14,7 +14,7 @@ def get_app_dir() -> Path:
 
 APP_DIR = get_app_dir()
 CONFIG_PATH = APP_DIR / "config.json"
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 
 
 def _default_zapret_root() -> Path:

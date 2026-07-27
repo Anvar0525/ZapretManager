@@ -128,8 +128,13 @@ def main() -> None:
                     def work():
                         try:
                             msg = controller.apply_app_update(remote_ver)
-                            root.after(0, lambda: notify(msg))
-                            root.after(800, os_exit)
+
+                            def done():
+                                notify(msg)
+                                # Must schedule exit on the Tk main thread
+                                root.after(600, os_exit)
+
+                            root.after(0, done)
                         except Exception as exc:
                             err = f"Ошибка обновления приложения: {exc}"
                             _log(err)

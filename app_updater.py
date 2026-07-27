@@ -19,6 +19,11 @@ UA = f"ZapretManager/{APP_VERSION}"
 # Onefile PyInstaller builds are typically > 8 MB; HTML error pages are tiny
 _MIN_EXE_BYTES = 5 * 1024 * 1024
 
+CREATE_NO_WINDOW = 0x08000000
+DETACHED_PROCESS = 0x00000008
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+
 
 @dataclass
 class AppRelease:
@@ -103,11 +108,9 @@ def _validate_exe(path: Path) -> None:
 
 def schedule_replace_and_restart(new_exe: Path) -> None:
     """
-    Current process exits; a detached helper bat replaces the exe and relaunches it.
+    Current process exits; a hidden PowerShell helper replaces the exe and relaunches.
 
-    Important for PyInstaller --onefile: the new process must NOT be a child of the
-    old bootloader, otherwise the old process deletes _MEI* and the new launch fails
-    with "Failed to load Python DLL".
+    Must not be a child of the old PyInstaller onefile bootloader (avoids _MEI DLL error).
     """
     if not getattr(sys, "frozen", False):
         raise RuntimeError("Самообновление работает только из собранного .exe")
@@ -115,51 +118,53 @@ def schedule_replace_and_restart(new_exe: Path) -> None:
     _validate_exe(new_exe)
 
     current = Path(sys.executable).resolve()
-    # Keep the new binary next to the app (not only in Temp) for a safer swap
     staged = current.with_name(current.stem + ".update.exe")
+    backup = current.with_suffix(current.suffix + ".bak")
     try:
         if staged.exists():
             staged.unlink()
     except OSError:
         pass
-    # copy2 via read/write — shutil.copy2 also fine
+
     import shutil
 
     shutil.copy2(new_exe, staged)
 
-    bat = current.parent / "zapret_manager_update.bat"
     pid = os.getpid()
-    # Use ping instead of timeout (timeout breaks under CREATE_NO_WINDOW).
-    # Breakaway + extra delay so old _MEI* cleanup finishes before new extract.
-    bat.write_text(
-        "\r\n".join(
+    proc_name = current.stem  # ZapretManager
+    ps1 = current.parent / "zapret_manager_update.ps1"
+
+    # Hidden updater: wait for PID (timeout), wait until process name is gone,
+    # swap files, start new exe, clean up.
+    ps1.write_text(
+        "\n".join(
             [
-                "@echo off",
-                "setlocal",
-                "set PYINSTALLER_RESET_ENVIRONMENT=1",
-                f'set "TARGET={current}"',
-                f'set "STAGED={staged}"',
-                f'set "BACKUP={current.with_suffix(current.suffix + ".bak")}"',
-                f":wait",
-                f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
-                "if not errorlevel 1 (",
-                "  ping 127.0.0.1 -n 2 >nul",
-                "  goto wait",
-                ")",
-                "REM let old onefile bootloader finish deleting its _MEI folder",
-                "ping 127.0.0.1 -n 4 >nul",
-                'if exist "%BACKUP%" del /F /Q "%BACKUP%" >nul 2>&1',
-                'if exist "%TARGET%" move /Y "%TARGET%" "%BACKUP%" >nul',
-                'move /Y "%STAGED%" "%TARGET%" >nul',
-                "if not exist \"%TARGET%\" (",
-                '  if exist "%BACKUP%" move /Y "%BACKUP%" "%TARGET%" >nul',
-                "  exit /b 1",
-                ")",
-                'del /F /Q "%BACKUP%" >nul 2>&1',
-                "REM new console session — not a child of the old onefile bootloader",
-                'start "" "%TARGET%"',
-                'del /F /Q "%~f0" >nul 2>&1',
-                "endlocal",
+                "$ErrorActionPreference = 'SilentlyContinue'",
+                f"$oldPid = {pid}",
+                f"$target = '{str(current).replace(chr(39), chr(39)+chr(39))}'",
+                f"$staged = '{str(staged).replace(chr(39), chr(39)+chr(39))}'",
+                f"$backup = '{str(backup).replace(chr(39), chr(39)+chr(39))}'",
+                f"$procName = '{proc_name.replace(chr(39), chr(39)+chr(39))}'",
+                "try { Wait-Process -Id $oldPid -Timeout 90 } catch {}",
+                "$deadline = (Get-Date).AddSeconds(45)",
+                "while ((Get-Date) -lt $deadline) {",
+                "  $left = @(Get-Process -Name $procName -ErrorAction SilentlyContinue)",
+                "  if ($left.Count -eq 0) { break }",
+                "  Start-Sleep -Milliseconds 400",
+                "}",
+                "Start-Sleep -Seconds 2",
+                "if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }",
+                "if (Test-Path -LiteralPath $target) { Move-Item -LiteralPath $target -Destination $backup -Force }",
+                "Move-Item -LiteralPath $staged -Destination $target -Force",
+                "if (-not (Test-Path -LiteralPath $target)) {",
+                "  if (Test-Path -LiteralPath $backup) { Move-Item -LiteralPath $backup -Destination $target -Force }",
+                "  exit 1",
+                "}",
+                "if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }",
+                "$env:PYINSTALLER_RESET_ENVIRONMENT = '1'",
+                "Start-Process -FilePath $target",
+                "Start-Sleep -Milliseconds 500",
+                "Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force",
                 "",
             ]
         ),
@@ -167,14 +172,23 @@ def schedule_replace_and_restart(new_exe: Path) -> None:
         errors="replace",
     )
 
-    # Fully detach helper from this PyInstaller process tree
     flags = (
-        getattr(subprocess, "DETACHED_PROCESS", 0x8)
-        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
-        | 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+        CREATE_NO_WINDOW
+        | DETACHED_PROCESS
+        | CREATE_NEW_PROCESS_GROUP
+        | CREATE_BREAKAWAY_FROM_JOB
     )
     subprocess.Popen(
-        ["cmd.exe", "/c", str(bat)],
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+            str(ps1),
+        ],
         cwd=str(current.parent),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
